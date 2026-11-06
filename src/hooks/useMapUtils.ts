@@ -1,8 +1,8 @@
 /*
  * @Author: lixuming
  * @Date: 2026-09-16 14:47:34
- * @LastEditors: error: error: git config user.name & please set dead value or install git && error: git config user.email & please set dead value or install git & please set dead value or install git
- * @LastEditTime: 2026-11-05 17:20:24
+ * @LastEditors: lixuming 1493311067@qq.com
+ * @LastEditTime: 2026-11-06 11:21:13
  * @Description:
  * @FilePath: \team-management-vue\src\hooks\useMapUtils.ts
  */
@@ -36,6 +36,7 @@ import { get as getProjection } from "ol/proj";
 import { getWidth } from "ol/extent";
 import type {
   ExtrudedFeatureOptions,
+  FlyLineOptions,
   HighlightFeatureOptions,
   LayerPair,
 } from "@/types/mapUtils";
@@ -195,6 +196,8 @@ interface GisMapUtilsType {
     features: Feature | Feature[],
     options: ExtrudedFeatureOptions,
   ) => void;
+  addFlyLines: (options: FlyLineOptions) => void;
+  clearFlyLines: (name: string) => void;
   clearHighLightFeature: (name?: string) => void;
   changeMapType: (type: "2d" | "3d") => Promise<void>;
 }
@@ -217,6 +220,91 @@ let isInitializing = false;
 let initGeneration = 0;
 
 const highlightGroups: HighlightGroup[] = [];
+const OL_INITIAL_ZOOM_FACTOR = 0.6;
+
+const fitInitialOlView = (
+  view: View,
+  extent: [number, number, number, number],
+  maxZoom: number,
+  size?: [number, number],
+) => {
+  view.fit(extent, {
+    duration: 0,
+    padding: [48, 48, 48, 48],
+    maxZoom,
+    size,
+  });
+};
+
+const getCesiumViewScale = (
+  viewer: Cesium.Viewer,
+  center: [number, number],
+  width: number,
+  height: number,
+) => {
+  const projection = viewer.scene.mapProjection;
+  const centerPosition = projection.project(
+    Cesium.Cartographic.fromDegrees(center[0], center[1]),
+  );
+  const longitudeOffset = center[0] > 179 ? -1 : 1;
+  const latitudeOffset = center[1] > 89 ? -1 : 1;
+  const longitudePosition = projection.project(
+    Cesium.Cartographic.fromDegrees(
+      center[0] + longitudeOffset,
+      center[1],
+    ),
+  );
+  const latitudePosition = projection.project(
+    Cesium.Cartographic.fromDegrees(
+      center[0],
+      center[1] + latitudeOffset,
+    ),
+  );
+  const unitsPerDegreeX = Math.abs(longitudePosition.x - centerPosition.x);
+  const unitsPerDegreeY = Math.abs(latitudePosition.y - centerPosition.y);
+  const verticalFov = Cesium.Math.toRadians(60);
+  const horizontalFov =
+    2 * Math.atan(Math.tan(verticalFov / 2) * (width / height));
+
+  return Math.max(
+    (unitsPerDegreeX * width) / (2 * Math.tan(horizontalFov / 2)),
+    (unitsPerDegreeY * height) / (2 * Math.tan(verticalFov / 2)),
+  );
+};
+
+const getCesiumHeightForOlView = (
+  viewer: Cesium.Viewer,
+  center: [number, number],
+  resolution: number,
+  width: number,
+  height: number,
+) =>
+  resolution * getCesiumViewScale(viewer, center, width, height);
+
+const syncOlViewToCesiumHeight = (
+  view: View,
+  viewer: Cesium.Viewer,
+  center: [number, number],
+  cameraHeight: number,
+  width: number,
+  height: number,
+) => {
+  const resolution =
+    (cameraHeight / getCesiumViewScale(viewer, center, width, height)) *
+    OL_INITIAL_ZOOM_FACTOR;
+  view.setResolution(resolution);
+  const initialZoom = view.getZoom();
+  if (initialZoom !== undefined) {
+    view.setMinZoom(initialZoom);
+  }
+};
+
+const lockOlViewAtCurrentZoom = (view: View) => {
+  const initialZoom = view.getZoom();
+  if (initialZoom !== undefined) {
+    view.setMinZoom(initialZoom);
+  }
+};
 
 /** 地图操作接口的具体实现。 */
 const utils: GisMapUtilsType = {
@@ -281,9 +369,9 @@ const utils: GisMapUtilsType = {
         const highlightOptions: HighlightFeatureOptions = {
           name: "province-geojson",
           fill: true,
-          fillColor: "rgba(0, 100, 255, 0.3)",
+          fillColor: "#102b50",
           line: true,
-          lineColor: "#0064ff",
+          lineColor: "#3c92c7",
           lineWidth: 2,
           label: true,
           labelField: "name",
@@ -316,7 +404,6 @@ const utils: GisMapUtilsType = {
 
           utils.highlightExtrudedFeatures(geoJsonFeatures, {
             ...geoJsonExtrusionOptions!,
-            label: false,
             locate: false,
           });
         } finally {
@@ -337,68 +424,88 @@ const utils: GisMapUtilsType = {
           Math.max(bboxMinLat, minLatitude),
           maxLat - 0.1,
         );
-        const viewExtent: [number, number, number, number] = [
-          minLon,
-          viewMinLat,
-          maxLon,
-          maxLat,
-        ];
-        initialGeoJsonExtent = viewExtent;
-        const maxZoom = options?.geoJsonMaxZoom ?? 4;
-        initialGeoJsonMaxZoom = maxZoom;
-        if (containers.ol.clientWidth && containers.ol.clientHeight) {
-          olMap.getView().fit(viewExtent, {
-            duration: 0,
-            padding: [48, 48, 48, 48],
-            maxZoom,
-          });
-        } else {
-          pendingOlExtent = viewExtent;
-          pendingOlMaxZoom = maxZoom;
-        }
-
-        const viewCenter = options?.geoJsonView?.center ?? [
+        const requestedCenter = options?.geoJsonView?.center ?? [
           (minLon + maxLon) / 2,
           (viewMinLat + maxLat) / 2,
         ];
         const halfWidth = (maxLon - minLon) / 2;
         const halfHeight = (maxLat - viewMinLat) / 2;
         const cesiumBbox: [number, number, number, number] = [
-          Math.max(-180, viewCenter[0] - halfWidth),
-          Math.max(-89.5, viewCenter[1] - halfHeight),
-          Math.min(180, viewCenter[0] + halfWidth),
-          Math.min(89.5, viewCenter[1] + halfHeight),
+          Math.max(-180, requestedCenter[0] - halfWidth),
+          Math.max(-89.5, requestedCenter[1] - halfHeight),
+          Math.min(180, requestedCenter[0] + halfWidth),
+          Math.min(89.5, requestedCenter[1] + halfHeight),
         ];
+        const viewExtent = cesiumBbox;
+        initialGeoJsonExtent = viewExtent;
+        const maxZoom = options?.geoJsonMaxZoom ?? 4;
+        initialGeoJsonMaxZoom = maxZoom;
+        const viewportWidth = Math.max(
+          containers.ol.clientWidth,
+          containers.cesium.clientWidth,
+        );
+        const viewportHeight = Math.max(
+          containers.ol.clientHeight,
+          containers.cesium.clientHeight,
+        );
+        if (viewportWidth && viewportHeight) {
+          fitInitialOlView(olMap.getView(), viewExtent, maxZoom, [
+            viewportWidth,
+            viewportHeight,
+          ]);
+        } else {
+          pendingOlExtent = viewExtent;
+          pendingOlMaxZoom = maxZoom;
+        }
+
+        const fittedCenter = olMap.getView().getCenter();
+        const viewCenter: [number, number] = fittedCenter
+          ? [fittedCenter[0], fittedCenter[1]]
+          : [
+              (viewExtent[0] + viewExtent[2]) / 2,
+              (viewExtent[1] + viewExtent[3]) / 2,
+            ];
         const activeViewer = viewer;
         const cameraController = activeViewer.scene.screenSpaceCameraController;
-        cameraController.minimumZoomDistance =
-          options?.geoJsonView?.minZoomDistance ?? 900_000;
         cameraController.enableCollisionDetection = true;
-        const projection = activeViewer.scene.mapProjection;
-        const southwest = projection.project(
-          Cesium.Cartographic.fromDegrees(cesiumBbox[0], cesiumBbox[1]),
+        const cameraWidth = Math.max(
+          containers.cesium.clientWidth,
+          containers.ol.clientWidth,
+          1,
         );
-        const northeast = projection.project(
-          Cesium.Cartographic.fromDegrees(cesiumBbox[2], cesiumBbox[3]),
+        const cameraHeightPixels = Math.max(
+          containers.cesium.clientHeight,
+          containers.ol.clientHeight,
+          1,
         );
-        const projectedWidth = Math.abs(northeast.x - southwest.x);
-        const projectedHeight = Math.abs(northeast.y - southwest.y);
-        const viewportWidth = Math.max(containers.cesium.clientWidth, 1);
-        const viewportHeight = Math.max(containers.cesium.clientHeight, 1);
-        const viewPadding = 48;
-        const usableWidth = Math.max(viewportWidth - viewPadding * 2, 1);
-        const usableHeight = Math.max(viewportHeight - viewPadding * 2, 1);
-        const verticalFov = Cesium.Math.toRadians(60);
-        const horizontalFov =
-          2 *
-          Math.atan(
-            Math.tan(verticalFov / 2) * (usableWidth / usableHeight),
-          );
+        const olResolution = olMap.getView().getResolution() ?? 1;
         const cameraHeight =
-          Math.max(
-            projectedWidth / (2 * Math.tan(horizontalFov / 2)),
-            projectedHeight / (2 * Math.tan(verticalFov / 2)),
-          ) * 1.2;
+          getCesiumHeightForOlView(
+            activeViewer,
+            viewCenter,
+            olResolution,
+            cameraWidth,
+            cameraHeightPixels,
+          ) * 1.08;
+        syncOlViewToCesiumHeight(
+          olMap.getView(),
+          activeViewer,
+          viewCenter,
+          cameraHeight,
+          cameraWidth,
+          cameraHeightPixels,
+        );
+        cameraController.minimumZoomDistance = Math.min(
+          options?.geoJsonView?.minZoomDistance ?? 900_000,
+          cameraHeight / 2,
+        );
+        cameraController.maximumZoomDistance = Math.max(
+          cameraController.minimumZoomDistance,
+          Math.min(
+            options?.geoJsonView?.maxZoomDistance ?? cameraHeight,
+            cameraHeight,
+          ),
+        );
         initialCesiumView = { center: viewCenter, height: cameraHeight };
         activeViewer.camera.flyTo({
           destination: Cesium.Cartesian3.fromDegrees(
@@ -414,54 +521,71 @@ const utils: GisMapUtilsType = {
             ),
             roll: 0,
           },
-          complete: () => {
-            if (activeViewer.isDestroyed() || generation !== initGeneration) {
-              return;
-            }
-
-            cameraController.maximumZoomDistance =
-              options?.geoJsonView?.maxZoomDistance ??
-              Math.max(
-                activeViewer.camera.positionCartographic.height * 1.02,
-                cameraController.minimumZoomDistance,
-              );
-
-            if (
-              !geoJsonExtrusionOptions?.label ||
-              !highlightGroups.some(
-                (group) => group.name === geoJsonExtrusionOptions?.name,
-              )
-            ) {
-              return;
-            }
-
-            const scene = activeViewer.scene;
-            const removePostRender = scene.postRender.addEventListener(() => {
-              if (activeViewer.isDestroyed() || generation !== initGeneration) {
-                removePostRender();
-                return;
-              }
-              removePostRender();
-              if (
-                !highlightGroups.some(
-                  (group) => group.name === geoJsonExtrusionOptions?.name,
-                )
-              ) {
-                return;
-              }
-
-              utils.highlightExtrudedFeatures(geoJsonFeatures, {
-                ...geoJsonExtrusionOptions!,
-                showExtrusion: false,
-                label: true,
-                locate: false,
-              });
-              scene.requestRender();
-            });
-            scene.requestRender();
-          },
         });
         bindCesiumCameraLimit(activeViewer, cesiumBbox);
+      } else {
+        const olView = olMap.getView();
+        const fittedCenter = olView.getCenter() ?? [
+          106.019297427259,
+          35.14806723230799,
+        ];
+        const viewCenter: [number, number] = [
+          fittedCenter[0],
+          fittedCenter[1],
+        ];
+        const cameraWidth = Math.max(
+          containers.cesium.clientWidth,
+          containers.ol.clientWidth,
+          1,
+        );
+        const cameraHeightPixels = Math.max(
+          containers.cesium.clientHeight,
+          containers.ol.clientHeight,
+          1,
+        );
+        const cameraController = viewer.scene.screenSpaceCameraController;
+        cameraController.enableCollisionDetection = true;
+        const olResolution = olView.getResolution() ?? 1;
+        const cameraHeight = getCesiumHeightForOlView(
+          viewer,
+          viewCenter,
+          olResolution,
+          cameraWidth,
+          cameraHeightPixels,
+        );
+        syncOlViewToCesiumHeight(
+          olView,
+          viewer,
+          viewCenter,
+          cameraHeight,
+          cameraWidth,
+          cameraHeightPixels,
+        );
+        cameraController.minimumZoomDistance = Math.min(
+          options?.geoJsonView?.minZoomDistance ?? 900_000,
+          cameraHeight / 2,
+        );
+        cameraController.maximumZoomDistance = Math.max(
+          cameraController.minimumZoomDistance,
+          Math.min(
+            options?.geoJsonView?.maxZoomDistance ?? cameraHeight,
+            cameraHeight,
+          ),
+        );
+        initialCesiumView = { center: viewCenter, height: cameraHeight };
+        viewer.camera.flyTo({
+          destination: Cesium.Cartesian3.fromDegrees(
+            viewCenter[0],
+            viewCenter[1],
+            cameraHeight,
+          ),
+          duration: 3,
+          orientation: {
+            heading: Cesium.Math.toRadians(0),
+            pitch: Cesium.Math.toRadians(-89.5),
+            roll: 0,
+          },
+        });
       }
 
       isInit.value = true;
@@ -1302,6 +1426,158 @@ const utils: GisMapUtilsType = {
     }
   },
   /**
+   * 在 Cesium 中按中心点和目标点绘制带循环流动动画的弧形飞线。
+   *
+   * @param options 飞线位置、方向、材质样式和动画参数。
+   * @returns 无返回值；可通过 clearFlyLines 或 clearHighLightFeature 按 name 清除。
+   */
+  addFlyLines(options: FlyLineOptions): void {
+    if (!cesiumInstance || cesiumInstance.isDestroyed()) {
+      ElMessage.warning("Cesium 地图未初始化，无法添加飞线！");
+      return;
+    }
+
+    const isValidPosition = (position: [number, number]) =>
+      Number.isFinite(position[0]) &&
+      Number.isFinite(position[1]) &&
+      Math.abs(position[0]) <= 180 &&
+      Math.abs(position[1]) <= 90;
+    if (
+      !options.name ||
+      !isValidPosition(options.center) ||
+      options.points.length === 0 ||
+      options.points.some((point) => !isValidPosition(point))
+    ) {
+      ElMessage.warning("飞线配置无效，请检查分组名、中心点和目标点！");
+      return;
+    }
+
+    if (options.clear) {
+      utils.clearHighLightFeature(options.name);
+    }
+
+    const viewer = cesiumInstance;
+    const direction = options.direction ?? "diverge";
+    const style = options.style ?? "glow";
+    const color =
+      Cesium.Color.fromCssColorString(options.color ?? "#ffbd2e") ??
+      Cesium.Color.YELLOW;
+    const baseColor = color.withAlpha(
+      Math.min(Math.max(options.opacity ?? 0.3, 0), 1),
+    );
+    const width = Math.max(options.width ?? 2, 1);
+    const flowWidth = Math.max(options.flowWidth ?? width + 1, 1);
+    const glowPower = Math.min(Math.max(options.glowPower ?? 0.2, 0), 1);
+    const dashLength = Math.max(options.dashLength ?? 16, 1);
+    const arcHeight = Math.max(options.arcHeight ?? 800_000, 0);
+    const segments = Math.max(Math.floor(options.segments ?? 64), 8);
+    const duration = Math.max(options.duration ?? 2_500, 1) / 1000;
+    const trailLength = Math.min(
+      Math.max(options.trailLength ?? 0.22, 0.01),
+      1,
+    );
+    const startTime = performance.now();
+    const entityIds: string[] = [];
+
+    const getMaterial = (materialColor: Cesium.Color) => {
+      if (style === "dash") {
+        return new Cesium.PolylineDashMaterialProperty({
+          color: materialColor,
+          dashLength,
+        });
+      }
+      if (style === "glow") {
+        return new Cesium.PolylineGlowMaterialProperty({
+          color: materialColor,
+          glowPower,
+        });
+      }
+      return materialColor;
+    };
+
+    const getProgress = () =>
+      (((performance.now() - startTime) / 1000 / duration) % 1 + 1) % 1;
+
+    options.points.forEach((point) => {
+      const source =
+        direction === "diverge" ? options.center : point;
+      const destination =
+        direction === "diverge" ? point : options.center;
+      const getPosition = (progress: number) => {
+        const longitude =
+          source[0] + (destination[0] - source[0]) * progress;
+        const latitude =
+          source[1] + (destination[1] - source[1]) * progress;
+        const height = Math.sin(Math.PI * progress) * arcHeight;
+        return Cesium.Cartesian3.fromDegrees(longitude, latitude, height);
+      };
+      const positions = Array.from({ length: segments + 1 }, (_, index) =>
+        getPosition(index / segments),
+      );
+
+      const base = viewer.entities.add({
+        polyline: {
+          positions,
+          width,
+          material: getMaterial(baseColor),
+        },
+      });
+      entityIds.push(base.id);
+
+      const flow = viewer.entities.add({
+        polyline: {
+          positions: new Cesium.CallbackProperty(() => {
+            const progress = getProgress();
+            const start = Math.max(0, progress - trailLength);
+            const pointCount = Math.max(
+              2,
+              Math.ceil((progress - start) * segments),
+            );
+            return Array.from({ length: pointCount }, (_, index) =>
+              getPosition(
+                start +
+                  ((progress - start) * index) / (pointCount - 1),
+              ),
+            );
+          }, false),
+          width: flowWidth,
+          material: getMaterial(color),
+        },
+      });
+      entityIds.push(flow.id);
+
+      if (options.showPoint ?? true) {
+        const head = viewer.entities.add({
+          position: new Cesium.CallbackPositionProperty(
+            () => getPosition(getProgress()),
+            false,
+          ),
+          point: {
+            pixelSize: Math.max(options.pointSize ?? 8, 1),
+            color,
+            outlineColor: color.withAlpha(0.35),
+            outlineWidth: 4,
+            disableDepthTestDistance: Number.POSITIVE_INFINITY,
+          },
+        });
+        entityIds.push(head.id);
+      }
+    });
+
+    const group = highlightGroups.find(
+      (highlightGroup) => highlightGroup.name === options.name,
+    );
+    if (group) {
+      group.features.push(...entityIds);
+    } else {
+      highlightGroups.push({ name: options.name, features: entityIds });
+    }
+    viewer.scene.requestRender();
+  },
+  clearFlyLines(name: string): void {
+    utils.clearHighLightFeature(name);
+  },
+  /**
    * 在 Cesium 中绘制一个或多个面要素的三维挤出效果。
    *
    * @param inputFeatures 单个 OpenLayers 面要素或面要素数组。
@@ -1568,11 +1844,14 @@ const utils: GisMapUtilsType = {
     if (newType === "2d" && mapInstance) {
       mapInstance.updateSize();
       if (pendingOlExtent) {
-        mapInstance.getView().fit(pendingOlExtent, {
-          duration: 0,
-          padding: [48, 48, 48, 48],
-          maxZoom: pendingOlMaxZoom,
-        });
+        const size = mapInstance.getSize();
+        fitInitialOlView(
+          mapInstance.getView(),
+          pendingOlExtent,
+          pendingOlMaxZoom,
+          size ? [size[0], size[1]] : undefined,
+        );
+        lockOlViewAtCurrentZoom(mapInstance.getView());
         pendingOlExtent = null;
       }
     } else if (

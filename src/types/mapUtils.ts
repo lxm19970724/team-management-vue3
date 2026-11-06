@@ -74,6 +74,45 @@ export interface ExtrudedFeatureOptions {
   clear?: boolean;
 }
 
+export interface FlyLineOptions {
+  /** 飞线分组名，用于单独清理 */
+  name: string;
+  /** 飞线中心点 [经度, 纬度] */
+  center: [number, number];
+  /** 与中心点连接的目标点列表 [经度, 纬度] */
+  points: [number, number][];
+  /** diverge 从中心向外飞；converge 从目标点汇聚到中心 */
+  direction?: "diverge" | "converge";
+  /** 飞线颜色，支持 CSS 颜色格式 */
+  color?: string;
+  /** 飞线样式 */
+  style?: "solid" | "glow" | "dash";
+  /** 静态底线宽度 */
+  width?: number;
+  /** 静态底线透明度，范围 0-1 */
+  opacity?: number;
+  /** Glow 材质发光强度，范围 0-1 */
+  glowPower?: number;
+  /** 虚线间距 */
+  dashLength?: number;
+  /** 弧线最高点高度，单位米 */
+  arcHeight?: number;
+  /** 每条弧线采样点数 */
+  segments?: number;
+  /** 流动动画周期，单位毫秒 */
+  duration?: number;
+  /** 流动亮线长度，占整条弧线比例，范围 0-1 */
+  trailLength?: number;
+  /** 流动亮线宽度 */
+  flowWidth?: number;
+  /** 是否显示流动端点 */
+  showPoint?: boolean;
+  /** 流动端点像素大小 */
+  pointSize?: number;
+  /** 添加前是否清理同名分组 */
+  clear?: boolean;
+}
+
 // 图层组：底图 + 标注图层一对
 export interface LayerPair {
   baseLayer: any;

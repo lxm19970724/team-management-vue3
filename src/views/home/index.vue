@@ -1,29 +1,30 @@
 <!--
  * @Author: lixuming
  * @Date: 2026-09-22 10:30:03
- * @LastEditors: error: error: git config user.name & please set dead value or install git && error: git config user.email & please set dead value or install git & please set dead value or install git
- * @LastEditTime: 2026-11-05 16:19:52
+ * @LastEditors: lixuming 1493311067@qq.com
+ * @LastEditTime: 2026-11-06 16:29:54
  * @Description: 
  * @FilePath: \team-management-vue\src\views\home\index.vue
 -->
 <template>
     <div class="home">
-        <div class="left-aside">
-            <el-button type="primary" @click="addTianDi">天地图</el-button>
-            <el-button type="primary" @click="resetView">重置</el-button>
-            <el-button type="primary" @click="changeMapType('3d')">三维</el-button>
-            <el-button type="primary" @click="changeMapType('2d')">二维</el-button>
-        </div>
+
         <main class="map-layout">
+            <div class="left-aside">
+                <el-button type="primary" @click="addTianDi">天地图</el-button>
+                <el-button type="primary" @click="resetView">重置</el-button>
+                <el-button type="primary" @click="changeMapType('3d')">三维</el-button>
+                <el-button type="primary" @click="changeMapType('2d')">二维</el-button>
+            </div>
             <div class="map-main">
                 <!-- OpenLayers 2D容器 -->
                 <div ref="olMapRef" v-show="mapStore.mapType === '2d'" class="map-container"></div>
                 <!-- Cesium 3D容器 -->
-                <div ref="cesiumRef" v-show="mapStore.mapType === '3d'" id="cesiumContainer"
-                    class="map-container"></div>
+                <div ref="cesiumRef" v-show="mapStore.mapType === '3d'" id="cesiumContainer" class="map-container">
+                </div>
             </div>
-            <!-- 侧栏加入此布局后会占用独立空间，不覆盖地图。 -->
-            <!-- <aside class="right-aside">右侧</aside> -->
+            <!-- 侧栏占用独立空间，地图只在中间可视区域内进行取景。 -->
+            <aside class="right-aside">右侧</aside>
         </main>
     </div>
 </template>
@@ -59,6 +60,23 @@ const initMap = async () => {
             },
         },
     )
+
+    const center: [number, number] = geoJsonData.features.filter(item => item.properties.name === '上海市')[0].properties.center as [number, number] || [121.472644, 31.231706]
+
+    const flyPoints: [number, number][] = geoJsonData.features.filter(item => item.properties.name !== '上海市' && item.properties.center)
+        .map((feature) => feature.properties.center as [number, number])
+    console.log("🚀 ~ initMap ~ flyPoints:", flyPoints)
+
+    await gismap.utils.addFlyLines({
+        name: "routes",
+        center,
+        points: flyPoints,
+        direction: "converge", // converge 汇聚  diverge 发散
+        color: "#ffbd2e",
+        style: "glow", // gradient 渐变  solid 实线
+        arcHeight: 1300_000,
+        duration: 5000,
+    });
 }
 
 const tiandituFlag = ref(false)
@@ -130,14 +148,13 @@ onBeforeUnmount(() => {
     min-height: 0;
 
     .left-aside {
-        position: relative;
-        z-index: 1;
+        height: 100%;
+        width: 320px;
+        min-width: 320px;
+        flex: 0 0 320px;
         display: flex;
-        flex: 0 0 44px;
-        align-items: center;
-        gap: 8px;
-        padding: 0 8px;
         box-sizing: border-box;
+        background-color: rgb(101, 141, 252, .5);
     }
 
     .map-layout {
@@ -159,6 +176,11 @@ onBeforeUnmount(() => {
         inset: 0;
         width: 100%;
         height: 100%;
+        background-color: #050a2e;
+    }
+
+    :deep(.ol-viewport) {
+        background-color: #050a2e;
     }
 
     :deep(.ol-control) {
@@ -168,7 +190,7 @@ onBeforeUnmount(() => {
     :deep(.cesium-viewer-toolbar) {
         display: none !important;
     }
-    
+
     :deep(.cesium-viewer-bottom) {
         display: none !important;
     }
@@ -184,8 +206,12 @@ onBeforeUnmount(() => {
     }
 
     .right-aside {
-        flex: 0 0 300px;
-        min-width: 0;
+        height: 100%;
+        width: 320px;
+        min-width: 320px;
+        flex: 0 0 320px;
+        display: flex;
+        box-sizing: border-box;
         background-color: rgb(101, 141, 252, .5);
     }
 }
