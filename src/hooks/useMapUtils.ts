@@ -200,10 +200,18 @@ interface GisMapUtilsType {
   clearFlyLines: (name: string) => void;
   clearHighLightFeature: (name?: string) => void;
   changeMapType: (type: "2d" | "3d") => Promise<void>;
+  setCesiumFeatureClickHandler: (
+    handler: ((feature: Feature | null, pixel: [number, number]) => void) | null,
+  ) => void;
 }
 
 let mapInstance: OlMap | null = null;
 let cesiumInstance: Cesium.Viewer | null = null;
+let cesiumClickHandler: Cesium.ScreenSpaceEventHandler | null = null;
+let cesiumFeatureClickHandler:
+  | ((feature: Feature | null, pixel: [number, number]) => void)
+  | null = null;
+const cesiumEntityFeatures = new globalThis.Map<string, Feature>();
 let highlightLayer: VectorLayer<VectorSource> | null = null;
 const baseLayersGroup = ref<LayerPair[]>([]);
 let pendingOlExtent: [number, number, number, number] | null = null;
@@ -347,6 +355,8 @@ const utils: GisMapUtilsType = {
       viewer = new Cesium.Viewer(containers.cesium, {
         baseLayer: false,
         baseLayerPicker: false,
+        infoBox: false,
+        selectionIndicator: false,
         animation: false,
         timeline: false,
         sceneMode: Cesium.SceneMode.COLUMBUS_VIEW,
@@ -359,6 +369,28 @@ const utils: GisMapUtilsType = {
       viewer.scene.globe.baseColor = backgroundColor;
       mapInstance = olMap;
       cesiumInstance = viewer;
+      cesiumClickHandler?.destroy();
+      cesiumClickHandler = new Cesium.ScreenSpaceEventHandler(
+        viewer.scene.canvas,
+      );
+      cesiumClickHandler.setInputAction(
+        (movement: Cesium.ScreenSpaceEventHandler.PositionedEvent) => {
+          const picked = viewer?.scene.pick(movement.position);
+          const pickedId = Cesium.defined(picked) ? picked.id : undefined;
+          const entityId =
+            typeof pickedId === "string"
+              ? pickedId
+              : pickedId instanceof Cesium.Entity
+                ? pickedId.id
+                : undefined;
+          cesiumFeatureClickHandler?.(
+            entityId ? (cesiumEntityFeatures.get(entityId) ?? null) : null,
+            [movement.position.x, movement.position.y],
+          );
+        },
+        Cesium.ScreenSpaceEventType.LEFT_CLICK,
+      );
+      cesiumEntityFeatures.clear();
 
       if (options?.geoJson) {
         geoJsonFeatures = new GeoJSON().readFeatures(options.geoJson, {
@@ -593,6 +625,9 @@ const utils: GisMapUtilsType = {
       if (viewer && !viewer.isDestroyed()) {
         viewer.destroy();
       }
+      cesiumClickHandler?.destroy();
+      cesiumClickHandler = null;
+      cesiumEntityFeatures.clear();
       olMap?.setTarget(undefined);
       if (generation !== initGeneration) return;
 
@@ -1679,6 +1714,7 @@ const utils: GisMapUtilsType = {
             },
           });
           entityIds.push(body.id);
+          cesiumEntityFeatures.set(body.id, feature);
 
           const top = viewer.entities.add({
             polygon: {
@@ -1689,6 +1725,7 @@ const utils: GisMapUtilsType = {
             },
           });
           entityIds.push(top.id);
+          cesiumEntityFeatures.set(top.id, feature);
 
           if (options.line ?? true) {
             polygon.getLinearRings().forEach((ring) => {
@@ -1715,6 +1752,7 @@ const utils: GisMapUtilsType = {
                 },
               });
               entityIds.push(boundary.id);
+              cesiumEntityFeatures.set(boundary.id, feature);
             });
           }
         });
@@ -1765,6 +1803,7 @@ const utils: GisMapUtilsType = {
             },
           });
           entityIds.push(label.id);
+          cesiumEntityFeatures.set(label.id, feature);
         }
       }
     });
@@ -1811,6 +1850,7 @@ const utils: GisMapUtilsType = {
         } else if (cesiumInstance && !cesiumInstance.isDestroyed()) {
           const entity = cesiumInstance.entities.getById(item);
           if (entity) cesiumInstance.entities.remove(entity);
+          cesiumEntityFeatures.delete(item);
         }
       });
     });
@@ -1863,6 +1903,10 @@ const utils: GisMapUtilsType = {
     }
   },
 
+  setCesiumFeatureClickHandler(handler) {
+    cesiumFeatureClickHandler = handler;
+  },
+
   /**
    * 解绑事件并销毁二维、三维地图实例，清理高亮和初始化状态。
    *
@@ -1873,6 +1917,10 @@ const utils: GisMapUtilsType = {
     eventKeys.clear();
     initGeneration += 1;
 
+    cesiumClickHandler?.destroy();
+    cesiumClickHandler = null;
+    cesiumFeatureClickHandler = null;
+    cesiumEntityFeatures.clear();
     if (cesiumInstance && !cesiumInstance.isDestroyed()) {
       cesiumInstance.destroy();
     }

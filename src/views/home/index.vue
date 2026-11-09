@@ -16,12 +16,30 @@
                 <el-button type="primary" @click="changeMapType('3d')">三维</el-button>
                 <el-button type="primary" @click="changeMapType('2d')">二维</el-button>
             </div>
-            <div class="map-main">
+            <div ref="mapMainRef" class="map-main">
                 <!-- OpenLayers 2D容器 -->
                 <div ref="olMapRef" v-show="mapStore.mapType === '2d'" class="map-container"></div>
                 <!-- Cesium 3D容器 -->
                 <div ref="cesiumRef" v-show="mapStore.mapType === '3d'" id="cesiumContainer" class="map-container">
                 </div>
+                <section
+                    v-if="popupVisible"
+                    ref="featurePopupRef"
+                    class="feature-popup"
+                    :style="popupStyle"
+                    @click.stop
+                >
+                    <header class="feature-popup__header">
+                        <strong>{{ selectedFeatureName }}</strong>
+                        <button type="button" aria-label="关闭" @click="closeFeaturePopup">×</button>
+                    </header>
+                    <dl class="feature-popup__properties">
+                        <template v-for="property in selectedProperties" :key="property.key">
+                            <dt>{{ property.key }}</dt>
+                            <dd>{{ property.value }}</dd>
+                        </template>
+                    </dl>
+                </section>
             </div>
             <!-- 侧栏占用独立空间，地图只在中间可视区域内进行取景。 -->
             <aside class="right-aside">右侧</aside>
@@ -46,6 +64,12 @@ const mapStore = useMapStore();
 
 const olMapRef = ref<HTMLDivElement | null>(null)
 const cesiumRef = ref<HTMLDivElement | null>(null)
+const mapMainRef = ref<HTMLDivElement | null>(null)
+const featurePopupRef = ref<HTMLElement | null>(null)
+const popupVisible = ref(false)
+const selectedFeatureName = ref('')
+const selectedProperties = ref<{ key: string; value: string }[]>([])
+const popupStyle = ref({ left: '0px', top: '0px' })
 
 const initMap = async () => {
     if (!olMapRef.value || !cesiumRef.value) return
@@ -61,12 +85,57 @@ const initMap = async () => {
         },
     )
 
+    gismap.utils.setCesiumFeatureClickHandler(async (feature, pixel) => {
+        gismap.utils.clearHighLightFeature('province-selection')
+        if (!feature) {
+            popupVisible.value = false
+            return
+        }
+
+        gismap.utils.highlightExtrudedFeatures(feature, {
+            name: 'province-selection',
+            height: 300_020,
+            sideColor: 'rgba(199, 99, 23, 0.72)',
+            fillColor: 'rgba(255, 139, 38, 0.72)',
+            line: true,
+            lineColor: '#ffe56d',
+            lineWidth: 3,
+            locate: false,
+        })
+
+        const properties = feature.getProperties()
+        selectedFeatureName.value = String(properties.name ?? '属性信息')
+        selectedProperties.value = Object.entries(properties)
+            .filter(([key, value]) => key !== 'geometry' && value !== undefined)
+            .map(([key, value]) => ({
+                key,
+                value: typeof value === 'object' && value !== null
+                    ? JSON.stringify(value)
+                    : String(value),
+            }))
+        popupVisible.value = true
+        await nextTick()
+
+        const container = mapMainRef.value
+        const popup = featurePopupRef.value
+        if (!container || !popup) return
+        const margin = 12
+        const left = Math.max(
+            margin,
+            Math.min(pixel[0] + margin, container.clientWidth - popup.offsetWidth - margin),
+        )
+        const top = Math.max(
+            margin,
+            Math.min(pixel[1] + margin, container.clientHeight - popup.offsetHeight - margin),
+        )
+        popupStyle.value = { left: `${left}px`, top: `${top}px` }
+    })
+
     const center: [number, number] = geoJsonData.features.filter(item => item.properties.name === '上海市')[0].properties.center as [number, number] || [121.472644, 31.231706]
 
     const flyPoints: [number, number][] = geoJsonData.features.filter(item => item.properties.name !== '上海市' && item.properties.center)
         .map((feature) => feature.properties.center as [number, number])
-    console.log("🚀 ~ initMap ~ flyPoints:", flyPoints)
-
+        
     await gismap.utils.addFlyLines({
         name: "routes",
         center,
@@ -120,6 +189,11 @@ const resetView = () => {
     gismap.utils.clearHighLightFeature("下钻高亮")
 }
 
+const closeFeaturePopup = () => {
+    popupVisible.value = false
+    gismap.utils.clearHighLightFeature('province-selection')
+}
+
 const changeMapType = (type: '2d' | '3d') => {
     gismap.utils.changeMapType(type)
 }
@@ -132,6 +206,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+    gismap.utils.setCesiumFeatureClickHandler(null)
     gismap.utils.destroy()
 })
 
@@ -169,6 +244,58 @@ onBeforeUnmount(() => {
         flex: 1;
         min-width: 0;
         min-height: 0;
+    }
+
+    .feature-popup {
+        position: absolute;
+        z-index: 20;
+        width: 300px;
+        max-width: calc(100% - 24px);
+        max-height: calc(100% - 24px);
+        overflow: auto;
+        box-sizing: border-box;
+        color: #eaf5ff;
+        background: rgba(5, 20, 45, 0.94);
+        border: 1px solid #3c92c7;
+        border-radius: 6px;
+        box-shadow: 0 4px 18px rgba(0, 0, 0, 0.4);
+    }
+
+    .feature-popup__header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 10px 12px;
+        border-bottom: 1px solid rgba(84, 184, 242, 0.35);
+
+        button {
+            padding: 0 2px;
+            color: #eaf5ff;
+            font-size: 20px;
+            line-height: 1;
+            background: transparent;
+            border: 0;
+            cursor: pointer;
+        }
+    }
+
+    .feature-popup__properties {
+        display: grid;
+        grid-template-columns: minmax(72px, auto) 1fr;
+        gap: 8px 12px;
+        margin: 0;
+        padding: 12px;
+        font-size: 12px;
+
+        dt {
+            color: #8bc7ed;
+        }
+
+        dd {
+            min-width: 0;
+            margin: 0;
+            overflow-wrap: anywhere;
+        }
     }
 
     .map-container {
